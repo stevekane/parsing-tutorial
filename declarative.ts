@@ -1,7 +1,7 @@
 const src = `{name:"Steve Kane",age:5,tested:false}`
 
 function pp ( a: any ) {
-  console.log(a instanceof Error ? a.message : JSON.stringify(a))
+  console.log(a instanceof Error ? a.message : a)
 }
 
 // Let's parse: {
@@ -350,7 +350,7 @@ pp(statement(code2))
 // with functions above.
 
 type IResult<T>
-  = { parsed: T, rest: string }
+  = { parsed: T | null, rest: string }
   | Error
 
 type IParser<T> = {
@@ -364,8 +364,10 @@ function run<T> ( p: IParser<T>, s: string ): IResult<T> {
 
 class Match {
   run(s: string) {
+    const rest = s.slice(this.t.length)
+
     return s.indexOf(this.t) === 0
-      ? { parsed: this.consume ? s.slice(0, this.t.length) : '', rest: s.slice(this.t.length) }
+      ? { parsed: this.consume ? s.slice(0, this.t.length) : null, rest }
       : new Error(`Expected ${ this.t }, found ${ s.slice(0, this.t.length) }`)
   }
   constructor( public consume: boolean, public t: string ) {}
@@ -373,3 +375,119 @@ class Match {
 
 pp(run(new Match(true, 'a'), 'abc'))
 pp(run(new Match(false, 'a'), 'abc'))
+
+// In order to compose these parsers together ( sequence, etc ) we need 
+// to come up with a flexible approach to combining the output of one
+// parser with the output of the second parser.  Let's first write 
+// a somewhat naive solution for the case where both parsers return a string
+// and we want to concatenate those strings.
+
+function cat ( p1: IParser<string>, p2: IParser<string> ): IParser<string> {
+  return {
+    consume: p1.consume && p2.consume,
+    run: function ( s: string ): IResult<string> {
+      var o1 = p1.run(s)
+      var o2: IResult<string>
+
+      if ( o1 instanceof Error ) {
+        return o1
+      }
+      else {
+        o2 = p2.run(o1.rest) 
+        if ( o2 instanceof Error ) {
+          return o2 
+        }
+        else {
+          return { 
+            parsed: ( o1.parsed == null ? '' : o1.parsed ) + ( o2.parsed == null ? '' : o2.parsed ),
+            rest: o2.rest
+          }
+        }
+      }
+    }
+  }
+}
+
+const p = cat(new Match(true, 'abc'), new Match(true, 'def'))
+
+pp(run(p, 'abcdef'))
+
+// Using our run function, we are now able to compose parsers in a very
+// limited way using the cat function.  More generically, we'd like 
+// create a compose function that accepts a function which combines the 
+// result of the first parser with the result of the second parser. 
+// Let's try to write that below:
+
+type ComposeFn<A, B> = ( a: A | null ) => IParser<B>
+
+function compose<A, B> ( p1: IParser<A>, f: ComposeFn<A, B> ): IParser<B> {
+  const consume = p1.consume
+  const run = function ( s: string ): IResult<B> {
+    const out = p1.run(s)  
+     
+    return out instanceof Error 
+      ? out
+      : f(out.parsed).run(out.rest)
+  }
+
+  return { consume, run }
+}
+
+const p2 = compose(
+  new Match(true, 'abc'), 
+  a => new Match(true, 'def'))
+
+pp(run(p2, 'abcdef')) // Read below if you're skeptical of this!
+
+// Notice the result here is NOT what we wanted:  We are only getting back
+// the parsed result of the second parser.  This means that the parsers
+// have both done their work ( if we put in zzzdef for example the first
+// parser would fail ) but we are only seeing the result of the second parser
+// in our output.  Here's where we need to think about HOW to get access
+// to the output of the second parser in order to merge the results.
+//
+// We know that our compose function will return an Error if the 
+// first parser returns an Error and otherwise will run the function we 
+// provide with the output of the first parser as an argument.
+// How then, can we get access to the result of the SECOND parser in
+// order to combine their results?
+
+const p3 = 
+  compose(new Match(true, 'abc'), a => 
+  compose(new Match(true, 'def'), b => ({
+    consume: true, 
+    run: function ( rest: string ): IResult<string> { 
+      const parsed = (a || '') + (b || '')
+      
+      return { parsed, rest }
+    }
+  })))
+
+pp(run(p3, 'abcdef'))
+
+// Hopefully, definition of p3 is interesting but also slightly off-putting
+// to you.  Let's step back for a second here and ask the question: "Does it
+// make sense to create an object for every parser just to capture whether
+// we intend to consume the output?".  With our new compose function,
+// we can decide on a case-by-case basis what we would like to do with the
+// results of any of the parsed content.  Let's rewind the clock a bit here
+// and try a definition of parsers that is just a function from string -> IResult<T>
+// again.
+//
+// What is the nature of parsers?  
+//   Parsers map an Input to a pair of data structures.  Typically, 
+
+type R<I, O> = [ I, O ] | Error
+type P<I, O> = ( i: I ) => R<I, O>
+
+function remove ( substring: string, s: string ): string {
+  return s.slice(substring.length)
+}
+
+function stsfy<I, O> ( p: Predicate<I> ): P<I, O> {
+  return function ( i: I ): R<I, O> {
+    return p(i) 
+      ? split(1, s) 
+      : new Error(`Expected ${ p }, found ${ s[0] }`)
+  }
+}
