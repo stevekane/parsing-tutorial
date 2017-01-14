@@ -387,22 +387,15 @@ function cat ( p1: IParser<string>, p2: IParser<string> ): IParser<string> {
     consume: p1.consume && p2.consume,
     run: function ( s: string ): IResult<string> {
       var o1 = p1.run(s)
-      var o2: IResult<string>
 
-      if ( o1 instanceof Error ) {
-        return o1
-      }
-      else {
-        o2 = p2.run(o1.rest) 
-        if ( o2 instanceof Error ) {
-          return o2 
-        }
-        else {
-          return { 
-            parsed: ( o1.parsed == null ? '' : o1.parsed ) + ( o2.parsed == null ? '' : o2.parsed ),
-            rest: o2.rest
-          }
-        }
+      if ( o1 instanceof Error ) return o1
+      
+      var o2 = p2.run(o1.rest) 
+
+      if ( o2 instanceof Error ) return o2 
+      return { 
+        parsed: ( o1.parsed == null ? '' : o1.parsed ) + ( o2.parsed == null ? '' : o2.parsed ),
+        rest: o2.rest
       }
     }
   }
@@ -474,20 +467,292 @@ pp(run(p3, 'abcdef'))
 // and try a definition of parsers that is just a function from string -> IResult<T>
 // again.
 //
-// What is the nature of parsers?  
-//   Parsers map an Input to a pair of data structures.  Typically, 
+// Let's also consider what the real nature of parsers is.  A parser seems to
+// be a function from an Iterable<I> to a pair of [ Iterable<I>, O ].  In other
+// words, a parser generally is a way of slicing off some portion of a data
+// structure and returning to you the result of that operation + the rest
+// of the data structure.  Let's try redefining our Parser to take a type
+// called Peekable which can perform two operations: peek and next.  peek
+// looks at the next I from the source without consuming it.  next consumes it.
 
-type R<I, O> = [ I, O ] | Error
-type P<I, O> = ( i: I ) => R<I, O>
-
-function remove ( substring: string, s: string ): string {
-  return s.slice(substring.length)
+type Peekable<T> = { 
+  peek(): T | undefined
+  next(): T | undefined
 }
+type R<I, O> 
+  = [ Peekable<I>, O ] 
+  | Error
+type P<I, O> = ( t: Peekable<I> ) => R<I, O>
 
-function stsfy<I, O> ( p: Predicate<I> ): P<I, O> {
-  return function ( i: I ): R<I, O> {
-    return p(i) 
-      ? split(1, s) 
-      : new Error(`Expected ${ p }, found ${ s[0] }`)
+function stsfy<I> ( p: Predicate<I> ) {
+  return function ( i: Peekable<I> ): R<I, I> {
+    var value = i.peek()
+
+    return value != undefined && p(value)
+      ? [ (i.next(), i), value ] 
+      : new Error(`Found ${ value }, wanted ${ p }`)
   }
 }
+
+function many<I, O> ( p: P<I, O> ) {
+  return function ( s: Peekable<I> ): R<I, O[]> {
+    var out: O[] = []
+    var r: R<I, O>
+
+    while ( r = p(s) ) {
+      if ( r instanceof Error ) break
+      out.push(r[1])
+    }
+    return [ s, out ]
+  }
+}
+
+function toPeekable ( s: string ): Peekable<string> {
+  var i = 0
+
+  return { next: () => s[i++], peek: () => s[i] }
+}
+
+const str = 'steve kane'
+const chr = stsfy(isAlpha)
+const chrs = many(chr)
+
+pp(chr(toPeekable(str)))
+pp(chrs(toPeekable(str)))
+
+// By now, you and I are probably both tired of checking 'instanceof Error' 
+// parsing.  It seems like all parsing operations follow the same script:
+//   Check the peeked content
+//   If it's an Error:  abort the operation and return an Error
+//   Else:              consume the next I by calling next
+//                      return the pair [ Iterable<I>, result ]
+//
+// Maybe we should encode this behavior in an updated version of our "compose"
+// function for our latest data types.  For giggles, let's call it "then".
+
+function then<I, A, B> ( pA: P<I, A>, f: ( a: A ) => P<I, B> ): P<I, B> {
+  return function ( s: Peekable<I> ): R<I, B> {
+    var out = pA(s)
+
+    return out instanceof Error
+      ? out 
+      : f(out[1])(out[0])
+  }
+}
+
+// Let's also write a simple function that takes a value and returns it 
+// as a parser.  That probably sounds really stupid, but it's just sugar
+// for the common pattern you'll see below.
+
+function parser<I, O> ( o: O ) {
+  return function ( i: Peekable<I> ): R<I, O> {
+    return [ i, o ]
+  }
+}
+
+// Javascript identifiers are always an alphanumeric character followed by
+// a sequence of alpha, _ and number
+
+const tail = stsfy(( s: string ) => isNumber(s) || isAlpha(s) || s === '_')
+const tails = many(tail)
+const ident = 
+  then(chr,   h => 
+  then(tails, t => 
+  parser([ h, ...t ].join(''))))
+
+pp(ident(toPeekable('foobar')))
+pp(ident(toPeekable('1oobar')))
+pp(ident(toPeekable('f00b4r_h4x0r')))
+
+// The above definition is pretty nice but pushing each character into an array
+// only to then collapse the array as a string seems un-needed, verbose, and 
+// likely to be a common need.  Let's write another combinator called asStr
+// which functions very similarly to many but only works for strings.
+
+function asStr ( p: P<string, string> ) {
+  return function ( s: Peekable<string> ): R<string, string> {
+    var out = ''
+    var r: R<string, string>
+
+    while ( r = p(s) ) {
+      if ( r instanceof Error ) break
+      out += r[1]
+    }
+    return [ s, out ]
+  }
+}
+
+function concat ( a: string, b: string ): string {
+  return a + b
+}
+
+const tails2 = asStr(tail)
+const ident2 =
+  then(chr,    h =>
+  then(tails2, t => 
+  parser(concat(h, t))))
+
+pp(ident2(toPeekable('cactur2')))
+
+// This is getting nice now but I cannot help but think that there might
+// be another way to express this code that is even more succinct.  We can
+// see that the parsing of tail characters is not dependent on the value 
+// we parsed for the head character.  This means that all we're really doing
+// is saying "run two parsers and then pass their results to a function"
+// Maybe we can write a function that takes functions of type ( A, B ) => C
+// and returns a function that Takes ( P<I, A>, P<I, B> ) => P<I, C>
+// 
+// We could then write something like: 
+//  lift2(concat, chr, tails2)
+
+type BinaryFn<A, B, C> = ( a: A, b: B ) => C
+
+function lift2<A, B, C, I> ( f: BinaryFn<A, B, C>, pA: P<I, A>, pB: P<I, B> ): P<I, C> {
+  return function ( s: Peekable<I> ): R<I, C> {
+    var o1 = pA(s) 
+
+    if ( o1 instanceof Error ) return o1
+
+    var o2 = pB(o1[0])
+
+    if ( o2 instanceof Error ) return o2
+
+    return [ o2[0], f(o1[1], o2[1]) ]
+  }
+}
+
+const ident3 = lift2(concat, chr, tails2)
+
+pp(ident3(toPeekable('foo_B4r')))
+pp(ident3(toPeekable('1bar')))
+
+// Let's talk theory for a very brief moment.
+//
+// 'then' is sometimes called a MONADIC composition operator.  This means
+// we can use it to define how a series of parsing computations are to
+// be composed together.
+// 
+// 'lift2' is a function made possible by the APPLICATIVE nature of some
+// parsers.  All this means is that the set of parsers are composed with
+// no dependency between one-another.  That's it.  
+//
+// Monadic composition is used to enable some parsers to use/depend on 
+// results of previous parsers.
+// Applicative composition is used to write parsers that do not depend
+// on results of previous parsers.
+// 
+// We now have some expressive tools that we can use to write a wide variety
+// of parsers.  However, we're missing one crucial tool ( combinator ) 
+// which we'll need for most non-trivial parsers: OR!  We need a way to say
+// "Parse THIS OR THAT".  Let's write it.
+
+function or<I, A> ( p1: P<I, A>, p2: P<I, A> ) {
+  return function ( s: Peekable<I> ): R<I, A> {
+    var o1 = p1(s)
+
+    return o1 instanceof Error
+      ? p2(s)
+      : o1
+  }
+}
+
+const charOrNum = or(stsfy(isAlpha), stsfy(isNumber))
+
+pp(charOrNum(toPeekable('a1')))
+pp(charOrNum(toPeekable('1b')))
+
+// Let's take a look at some sample JSON and try to write some parsers
+// that will help us parse it.  
+
+const json = `
+{
+  "name": "Sergey Muu",
+  "age": 10,
+  "skill-ratings": {
+    "engineering": 10,
+    "art": 2
+  },
+  "friends": {
+    { "name": "Steve Smith", age: 12 },
+    { "name": "Boris Yeltsin", age: 102 }
+  }
+}
+`
+
+// Let's write a few more combinators that will help us get this done
+
+function eq<T> ( t: T ) {
+  return stsfy(c => c == t)
+}
+
+function anyOf<I, T> ( ps: P<I, T>[] ) {
+  return function ( p: Peekable<I> ): R<I, T> {
+    for ( var i = 0, r: R<I, T>; i < ps.length; i++ ) {
+      r = ps[i](p)
+      if ( !(r instanceof Error) ) return r
+    }
+    return new Error('no matches')
+  }
+}
+
+function eat<I, A, B> ( p1: P<I, A>, p2: P<I, B> ) {
+  return then(p1, _ => p2)
+}
+
+function until<I, A, B> ( pEnd: P<I, A>, pRepeat: P<I, B> ) {
+  return function ( p: Peekable<I> ): R<I, B[]> {
+    const o: B[] = []
+
+    while ( p.peek() != undefined ) {
+      var e = pEnd(p) 
+
+      if ( !(e instanceof Error) ) return [ p, o ]
+
+      var r = pRepeat(p)
+
+      if ( r instanceof Error ) return r
+      o.push(r[1])
+    }
+    return new Error('Exhausted input')
+  }
+}
+
+function untilStr<I, A> ( pEnd: P<I, A>, pRepeat: P<I, string> ) {
+  return function ( p: Peekable<I> ): R<I, string> {
+    var o = ''
+
+    while ( p.peek() != undefined ) {
+      var e = pEnd(p) 
+
+      if ( !(e instanceof Error) ) return [ p, o ]
+
+      var r = pRepeat(p)
+
+      if ( r instanceof Error ) return r
+      o += r[1]
+    }
+    return new Error('Exhausted input')
+  }
+}
+
+const ANY_CHAR = stsfy(_ => true) as P<any, string>
+const QUOTE = eq('"')
+const LBRACKET = eq('{')
+const RBRACKET = eq('}')
+const LSQBRACKET = eq('[')
+const RSQBRACKET = eq(']')
+const COMMA = eq(',')
+const COLON = eq(':')
+const DASH = eq('-')
+const DOT = eq('.')
+const STRING = eat(QUOTE, untilStr(QUOTE, ANY_CHAR))
+const DIGITS = asStr(stsfy(isNumber))
+// TODO: handle negative.  need optional combinator I think
+const NUMBER = 
+  then(DIGITS, l =>
+  or(
+    then(eat(DOT, DIGITS), r => parser(`${ l }.${r}`)), 
+    then(eq(' '),          _ => parser(l))))
+
+pp(NUMBER(toPeekable('12345 ')))
+pp(NUMBER(toPeekable('12345.6789')))

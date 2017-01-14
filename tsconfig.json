@@ -3,7 +3,8 @@
     "strictNullChecks": true,
     "noImplicitAny": true,
     "noImplicitReturns": true,
-    "noImplicitThis": true
+    "noImplicitThis": true,
+    "target": "es6"
   },
   "exclude": [
     "node_modules",
