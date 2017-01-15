@@ -747,12 +747,12 @@ const DASH = eq('-')
 const DOT = eq('.')
 const STRING = eat(QUOTE, untilStr(QUOTE, ANY_CHAR))
 const DIGITS = asStr(stsfy(isNumber))
-// TODO: handle negative.  need optional combinator I think
+const OPTIONAL_DASH = or(DASH, parser(''))
 const NUMBER = 
-  then(DIGITS, l =>
+  then(lift2(concat, OPTIONAL_DASH, DIGITS), l =>
   or(
-    then(eat(DOT, DIGITS), r => parser(`${ l }.${r}`)), 
+    then(eat(DOT, DIGITS), r => parser(l + '.' + r)), 
     then(eq(' '),          _ => parser(l))))
 
 pp(NUMBER(toPeekable('12345 ')))
-pp(NUMBER(toPeekable('12345.6789')))
+pp(NUMBER(toPeekable('-12345.6789')))
