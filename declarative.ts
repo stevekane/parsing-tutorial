@@ -332,7 +332,7 @@ const statement = list([
 
 pp(statement(code2))
 
-// Our output now looks like [ 'var ', ' ', 'bar', ' ', '=', ' ', '123' ]
+// Our output now looks like [ 'var', ' ', 'bar', ' ', '=', ' ', '123' ]
 // This is better but we can now see some new issues with this approach:
 // We often need to parse certain punctuation or characters which have 
 // meaning in the input format but no bearing on the output structure.
@@ -534,9 +534,7 @@ function then<I, A, B> ( pA: P<I, A>, f: ( a: A ) => P<I, B> ): P<I, B> {
   return function ( s: Peekable<I> ): R<I, B> {
     var out = pA(s)
 
-    return out instanceof Error
-      ? out 
-      : f(out[1])(out[0])
+    return out instanceof Error ? out : f(out[1])(out[0])
   }
 }
 
@@ -569,14 +567,15 @@ pp(ident(toPeekable('f00b4r_h4x0r')))
 // likely to be a common need.  Let's write another combinator called asStr
 // which functions very similarly to many but only works for strings.
 
-function asStr ( p: P<string, string> ) {
-  return function ( s: Peekable<string> ): R<string, string> {
+function asStr<I, A> ( p: P<I, A> ) {
+  return function ( s: Peekable<I> ): R<I, string> {
     var out = ''
-    var r: R<string, string>
+    var r: R<I, A>
 
-    while ( r = p(s) ) {
+    while ( s.peek() != undefined ) {
+      r = p(s)
       if ( r instanceof Error ) break
-      out += r[1]
+      out += r instanceof String ? r[1] : r[1].toString()
     }
     return [ s, out ]
   }
@@ -605,7 +604,16 @@ pp(ident2(toPeekable('cactur2')))
 // We could then write something like: 
 //  lift2(concat, chr, tails2)
 
+type UnaryFn<A, C> = ( a: A ) => C
 type BinaryFn<A, B, C> = ( a: A, b: B ) => C
+
+function lift<A, C, I> ( f: UnaryFn<A, C>, pA: P<I, A> ): P<I, C> {
+  return function ( s: Peekable<I> ): R<I, C> {
+    var o1 = pA(s)
+
+    return o1 instanceof Error ? o1 : [ o1[0], f(o1[1]) ]
+  }
+}
 
 function lift2<A, B, C, I> ( f: BinaryFn<A, B, C>, pA: P<I, A>, pB: P<I, B> ): P<I, C> {
   return function ( s: Peekable<I> ): R<I, C> {
@@ -650,9 +658,7 @@ function or<I, A> ( p1: P<I, A>, p2: P<I, A> ) {
   return function ( s: Peekable<I> ): R<I, A> {
     var o1 = p1(s)
 
-    return o1 instanceof Error
-      ? p2(s)
-      : o1
+    return o1 instanceof Error ? p2(s) : o1
   }
 }
 
@@ -695,47 +701,64 @@ function anyOf<I, T> ( ps: P<I, T>[] ) {
   }
 }
 
-function eat<I, A, B> ( p1: P<I, A>, p2: P<I, B> ) {
-  return then(p1, _ => p2)
+function join ( ss: string[] ): string {
+  return ss.join('')
 }
 
-function until<I, A, B> ( pEnd: P<I, A>, pRepeat: P<I, B> ) {
-  return function ( p: Peekable<I> ): R<I, B[]> {
-    const o: B[] = []
+function atleast1Str ( p: P<string, string> ): P<string, string> {
+  return lift2(concat, p, asStr(p))
+}
 
-    while ( p.peek() != undefined ) {
-      var e = pEnd(p) 
-
-      if ( !(e instanceof Error) ) return [ p, o ]
-
-      var r = pRepeat(p)
-
-      if ( r instanceof Error ) return r
-      o.push(r[1])
-    }
-    return new Error('Exhausted input')
+function failed<T> ( message: string ) {
+  return function ( p: Peekable<T> ) {
+    return new Error(message) 
   }
 }
 
-function untilStr<I, A> ( pEnd: P<I, A>, pRepeat: P<I, string> ) {
-  return function ( p: Peekable<I> ): R<I, string> {
-    var o = ''
+function sequenceOf <I, A> ( ps: P<I, A>[] ): P<I, A[]> {
+  return function ( p: Peekable<I> ) {
+    var out: A[] = []
+    var r: R<I, A>
 
-    while ( p.peek() != undefined ) {
-      var e = pEnd(p) 
-
-      if ( !(e instanceof Error) ) return [ p, o ]
-
-      var r = pRepeat(p)
-
+    for ( var i = 0; i < ps.length; i++ ) {
+      r = ps[i](p)
       if ( r instanceof Error ) return r
-      o += r[1]
+      else                      out.push(r[1])
     }
-    return new Error('Exhausted input')
+    return [ p, out ]
   }
 }
 
-const ANY_CHAR = stsfy(_ => true) as P<any, string>
+function strSeq <I, A> ( ps: P<I, A>[] ): P<I, string> {
+  return function ( p: Peekable<I> ) {
+    var out = '' 
+    var r: R<I, A>
+    var o: A
+
+    for ( var i = 0; i < ps.length; i++ ) {
+      r = ps[i](p)
+      if ( r instanceof Error ) return r
+      o = r[1]
+      out += o instanceof String ? o : o.toString() 
+    }
+    return [ p, out ]
+  }
+}
+
+function fmap <I, A, B> ( pA: P<I, A>, f: ( a: A ) => B ): P<I, B> {
+  return function ( p: Peekable<I> ) {
+    var o = pA(p) 
+
+    return o instanceof Error ? o : [ o[0], f(o[1]) ]
+  }
+}
+
+function between <I, A, B, C> ( l: P<I, A>, p: P<I, B>, r: P<I, C> ): P<I, B> {
+  return then(l,   _ => 
+         then(p, out => 
+         then(r,   _ => <P<I, B>>parser(out))))
+}
+
 const QUOTE = eq('"')
 const LBRACKET = eq('{')
 const RBRACKET = eq('}')
@@ -745,14 +768,66 @@ const COMMA = eq(',')
 const COLON = eq(':')
 const DASH = eq('-')
 const DOT = eq('.')
-const STRING = eat(QUOTE, untilStr(QUOTE, ANY_CHAR))
-const DIGITS = asStr(stsfy(isNumber))
+const NON_QUOTE = stsfy(n => n != '"')
+const STRING = between(QUOTE, asStr(NON_QUOTE), QUOTE)
+const DIGIT = stsfy(isNumber)
+const DIGITS = asStr(DIGIT)
 const OPTIONAL_DASH = or(DASH, parser(''))
 const NUMBER = 
-  then(lift2(concat, OPTIONAL_DASH, DIGITS), l =>
   or(
-    then(eat(DOT, DIGITS), r => parser(l + '.' + r)), 
-    then(eq(' '),          _ => parser(l))))
+    strSeq([ OPTIONAL_DASH, DIGIT, DIGITS, DOT, DIGIT, DIGITS ]),
+    strSeq([ OPTIONAL_DASH, DIGIT, DIGITS ]))
 
-pp(NUMBER(toPeekable('12345 ')))
+pp(NUMBER(toPeekable('12345')))
 pp(NUMBER(toPeekable('-12345.6789')))
+pp(NUMBER(toPeekable('-12345')))
+pp(NUMBER(toPeekable('-.6789')))
+pp(NUMBER(toPeekable('-1123.')))
+
+// parsing '-1123' does NOT successfully work here which should be
+// surprising.  The reason here is pretty subtle and will require
+// us to re-think some aspects of our parsers.  
+//
+// the implementation of "or" is such that successful parsing 
+// consumes returned values from the input.  This means that if parsing
+// is partially successful ( doesn't branch on the very first thing 
+// compared ) that we will have consumed some of the input which 
+// is unrecoverable if we later decide that the branch of parsing 
+// we have taken actually doesn't fully parse.  
+// 
+// In order to solve this problem, we need to be able to step forward
+// a parser without completely consuming the input.  We need to be able
+// to "try" parsers without committing to consuming the input if
+// they fail.
+
+// There may be a negative sign
+// There then must be at least 1 digit
+// If there is a ".", there must be a least 1 digit after it
+// If there is not a dot, we are done
+
+function ifthen<I, A, B> ( cond: P<I, A>, pI: P<I, B>, pE: P<I, B> ) {
+  return function ( p: Peekable<I> ): R<I, B> {
+    var r = cond(p) 
+
+    return r instanceof Error 
+      ? pE(p)
+      : pI(r[0]) 
+  }
+}
+
+const NOT_DOT = stsfy(n => n != '.')
+const ATLEAST_1_DIGIT = strSeq([ DIGIT, DIGITS ])
+const NUM = strSeq([
+  OPTIONAL_DASH,
+  ATLEAST_1_DIGIT,
+  ifthen(DOT,
+    strSeq([ parser('.'), ATLEAST_1_DIGIT ]),
+    parser(''))
+])
+
+pp(NUM(toPeekable('-12345')))
+pp(NUM(toPeekable('-12345.678')))
+pp(NUM(toPeekable('-12345.678,')))
+pp(NUM(toPeekable('-12345.678]')))
+pp(NUM(toPeekable('-12345.')))
+pp(NUM(toPeekable('-.123')))
